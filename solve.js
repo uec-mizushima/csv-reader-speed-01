@@ -39,6 +39,35 @@ export function run(input) {
   let line = 1;
   if (text.charCodeAt(0) === 0xfeff) pos = 1;
 
+  // The next comma / LF / CR at or after the last place we looked, one
+  // cursor per character: a position, -1 for "none left in the text"
+  // (sticky: pos only moves forward overall, so once a scan from an
+  // earlier position found nothing, no later position can find anything),
+  // -2 for unknown. Remembering the cursors keeps every delimiter scan
+  // amortised: on an LF-only text the CR scan to the end happens once,
+  // not once per field, and likewise for commas on a comma-free text.
+  let commaNext = -2;
+  let lfNext = -2;
+  let crNext = -2;
+  function nextComma(from) {
+    if (commaNext === -1) return -1;
+    if (commaNext >= from) return commaNext;
+    commaNext = text.indexOf(',', from);
+    return commaNext;
+  }
+  function nextLf(from) {
+    if (lfNext === -1) return -1;
+    if (lfNext >= from) return lfNext;
+    lfNext = text.indexOf('\n', from);
+    return lfNext;
+  }
+  function nextCr(from) {
+    if (crNext === -1) return -1;
+    if (crNext >= from) return crNext;
+    crNext = text.indexOf('\r', from);
+    return crNext;
+  }
+
   let recordLine = 1;
   let recordRow = null;
 
@@ -61,9 +90,9 @@ export function run(input) {
       // Find the next special character from pos.
       let next = -1;
       let kind = -1;
-      const iComma = text.indexOf(',', pos);
-      const iLf = text.indexOf('\n', pos);
-      const iCr = text.indexOf('\r', pos);
+      const iComma = nextComma(pos);
+      const iLf = nextLf(pos);
+      const iCr = nextCr(pos);
       if (iComma !== -1) { next = iComma; kind = 44; }
       if (iLf !== -1 && (next === -1 || iLf < next)) { next = iLf; kind = 10; }
       if (iCr !== -1 && (next === -1 || iCr < next)) { next = iCr; kind = 13; }
@@ -113,22 +142,48 @@ export function run(input) {
     return [prefix + parts.join(''), ended, added];
   }
 
+  // Positions from which a scan has already proved "no such character in
+  // the rest of the text": a query starting at or after the recorded
+  // position may treat the character as absent. (Position-aware, unlike
+  // the readUnquoted cursors, because a quoted field that fails rewinds
+  // pos to just after its opening quote.)
+  let lfAbsentFrom = Infinity;
+  let crAbsentFrom = Infinity;
+
   // Counts line breaks in text[from, to) the way the reference counts them
   // inside a quoted field: each LF is one, each CRLF is one, each lone CR is
   // one. Also reports whether the segment holds any CR (needs conversion).
+  // The scans consult the absence proofs above (and the readUnquoted
+  // cursors' sticky -1, whose proofs start no later than the current
+  // field): without them, on a text with no CRs every quoted segment would
+  // pay a scan to the end of the text.
   function countBreaks(from, to) {
     let breaks = 0;
     let hasCr = false;
-    let i = text.indexOf('\n', from);
-    while (i !== -1 && i < to) {
-      breaks += 1;
-      i = text.indexOf('\n', i + 1);
+    if (from < lfAbsentFrom && lfNext !== -1) {
+      let i = text.indexOf('\n', from);
+      if (i === -1) {
+        lfAbsentFrom = from;
+      }
+      while (i !== -1 && i < to) {
+        breaks += 1;
+        const ni = text.indexOf('\n', i + 1);
+        if (ni === -1 && i + 1 < lfAbsentFrom) lfAbsentFrom = i + 1;
+        i = ni;
+      }
     }
-    i = text.indexOf('\r', from);
-    while (i !== -1 && i < to) {
-      hasCr = true;
-      if (text.charCodeAt(i + 1) !== 10) breaks += 1;
-      i = text.indexOf('\r', i + 1);
+    if (from < crAbsentFrom && crNext !== -1) {
+      let i = text.indexOf('\r', from);
+      if (i === -1) {
+        crAbsentFrom = from;
+      }
+      while (i !== -1 && i < to) {
+        hasCr = true;
+        if (text.charCodeAt(i + 1) !== 10) breaks += 1;
+        const ni = text.indexOf('\r', i + 1);
+        if (ni === -1 && i + 1 < crAbsentFrom) crAbsentFrom = i + 1;
+        i = ni;
+      }
     }
     return [breaks, hasCr];
   }
